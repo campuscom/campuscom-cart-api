@@ -1,14 +1,14 @@
-from campuslibs.cart.common import coupon_apply
-
 from rest_framework.views import APIView
 from rest_framework.response import Response
 
-from shared_models.models import Product, Store, Profile, MembershipProgramParticipant, MembershipProgramCoupon, Cart
+from shared_models.models import Product, Store, Profile, Cart
 from rest_framework.status import HTTP_200_OK
 
 from cart.auth import IsAuthenticated
 from cart.mixins import ResponseFormaterMixin
 from decimal import Decimal
+
+from campuslibs.cart.common import validate_membership, apply_per_product_discounts, validate_coupon
 
 def format_payload(payload):
     # payload data format is designed insensibly.
@@ -43,17 +43,6 @@ def format_payload(payload):
                 })
     return products
 
-
-def get_membership_coupons(profile, store):
-    if profile:
-        try:
-            member = MembershipProgramParticipant.objects.get(profile=profile, membership_program__store=store)
-        except MembershipProgramParticipant.DoesNotExist:
-            pass
-        else:
-            membership_coupons = MembershipProgramCoupon.objects.filter(membership_program=member.membership_program)
-            return member, [mcoupon.coupon for mcoupon in membership_coupons]
-    return None, []
 
 class PaymentSummary(APIView, ResponseFormaterMixin):
     http_method_names = ['head', 'get', 'post']
@@ -92,17 +81,12 @@ class PaymentSummary(APIView, ResponseFormaterMixin):
         except Store.DoesNotExist:
             return Response({'message': 'invalid store slug'}, status=HTTP_200_OK)
 
-        coupon_code = request.data.get('coupon_code', None)
+        coupon_codes = request.data.get('coupon_codes', [])
 
         cart_items = format_payload(cart_details)
 
-        sub_total = Decimal('0.00')
-        total_discount = Decimal('0.00')
-        total_payable = sub_total - total_discount
-
-        discounts = []
         products = []
-        coupon_messages = []
+        sub_total = Decimal('0.0')
 
         for item in cart_items:
             try:
@@ -119,83 +103,82 @@ class PaymentSummary(APIView, ResponseFormaterMixin):
                     continue
 
                 related_products.append({
+                    'id': str(related_product.id),
                     'title': related_product.title,
                     'quantity': int(related_item['quantity']),
                     'product_type': related_product.product_type,
                     'item_price': related_product.fee,
                     'price': related_product.fee * int(related_item['quantity']),
+                    'discounts': [],
+                    'total_discount': Decimal('0.0'),
+                    'minimum_fee': related_product.minimum_fee,
+                    'gross_amount': related_product.fee * int(related_item['quantity']),
+                    'total_amount': related_product.fee * int(related_item['quantity']),
                 })
                 sub_total = sub_total + (related_product.fee * int(related_item['quantity']))
 
             products.append({
+                'id': str(product.id),
                 'title': product.title,
                 'quantity': int(item['quantity']),
                 'product_type': product.product_type,
                 'item_price': product.fee,
                 'price': product.fee * int(item['quantity']),
-                'related_products': related_products
+                'related_products': related_products,
+                'discounts': [],
+                'total_discount': Decimal('0.0'),
+                'minimum_fee': product.minimum_fee,
+                'gross_amount': product.fee * int(item['quantity']),
+                'total_amount': product.fee * int(item['quantity']),
             })
             sub_total = sub_total + (product.fee * int(item['quantity']))
 
-        # sub_total updated. so update total_payable too
-        total_payable = sub_total - total_discount
-
         # membership section
         # get the memberships this particular user bought
-        member, membership_coupons = get_membership_coupons(profile, store)
-        if member:
-            membership_discount = Decimal('0.00')
-            for mcoupon in membership_coupons:
-                coupon, discount_amount, coupon_message = coupon_apply(store, mcoupon.code, total_payable, profile, cart)
 
-                if coupon is not None:
-                    total_discount = total_discount + discount_amount
-                    membership_discount = membership_discount + discount_amount
-
-                    discounts.append({
-                        'type': 'membership',
-                        'title': member.membership_program.title,
-                        'amount': membership_discount
-                    })
-        # total_discount updated. so update total_payable too
-        total_payable = sub_total - total_discount
+        membership_program = validate_membership(store, profile)
+        if membership_program:
+            for mpd in membership_program.membershipprogramdiscount_set.all():
+                products = apply_per_product_discounts(mpd.discount_program, products=products)
 
         # coupon section
 
-        if coupon_code in [mcoupon.code for mcoupon in membership_coupons]:
-            coupon_messages.append({
-                'code': coupon_code,
-                'message': 'This coupon is already applied as a membership privilege'
-            })
-        else:
-            if coupon_code:
-                coupon, discount_amount, coupon_message = coupon_apply(store, coupon_code, sub_total, profile, cart)
+        # TODO: first, check if discount_program from membership and discount_program from coupon are both the same.
+        # if not, only then proceed. same discount_program can only be applied once.
+        for coupon_code in coupon_codes:
+            discount_program, coupon_message = validate_coupon(store, coupon_code, profile)
+            if discount_program:
+                products = apply_per_product_discounts(discount_program, products=products)
 
-                if coupon is not None:
-                    discounts.append({
-                        'type': 'coupon',
-                        'code': coupon.code,
-                        'amount': discount_amount
-                    })
+        total_discount = Decimal('0.0')
 
-                    total_discount = total_discount + discount_amount
-                    # total_discount updated. so update total_payable too
-                    total_payable = sub_total - total_discount
-                else:
-                    coupon_messages.append({
-                        'code': coupon_code,
-                        'message': coupon_message
-                    })
+        for p_idx, product in enumerate(products):
+            if 'discounts' in product:
+                for d_idx, discount in enumerate(products[p_idx]['discounts']):
+                    products[p_idx]['discounts'][d_idx].pop('rule', None)
+                    products[p_idx]['discounts'][d_idx].pop('program', None)
 
 
+            if 'related_products' in product:
+                for related_idx, related_product in enumerate(products[p_idx]['related_products']):
+                    if 'discounts' in related_product:
+                        for d_idx, discount in enumerate(products[p_idx]['related_products'][related_idx]['discounts']):
+                            products[p_idx]['related_products'][related_idx]['discounts'][d_idx].pop('rule', None)
+                            products[p_idx]['related_products'][related_idx]['discounts'][d_idx].pop('program', None)
+
+                    try:
+                        total_discount = total_discount + related_product['total_discount']
+                    except KeyError:
+                        pass
+            try:
+                total_discount = total_discount + product['total_discount']
+            except KeyError:
+                pass
 
         data = {
             'products': products,
-            'discounts': discounts,
             'subtotal': sub_total,
             'total_discount': total_discount,
-            'total_payable': total_payable,
-            'coupon_messages': coupon_messages
+            'total_payable': sub_total - total_discount,
         }
-
         return Response(self.object_decorator(data), status=HTTP_200_OK)

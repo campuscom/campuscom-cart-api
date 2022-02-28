@@ -59,7 +59,7 @@ class CartDetails(APIView, ResponseFormaterMixin):
 
         data = {
             'cart_id': str(cart.id),
-            'order_id': cart.ref_id,
+            'order_id': cart.order_ref,
             'status': cart.status,
             'products': products
         }

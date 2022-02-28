@@ -1,6 +1,8 @@
-from campuslibs.cart.common import coupon_apply, create_cart, get_store_from_product, tax_apply
+from campuslibs.cart.common import validate_coupon, create_cart, apply_discounts, tax_apply
 from django_scopes import scopes_disabled
 from django.db.models import Sum
+
+from decimal import Decimal
 
 from rest_framework.views import APIView
 from rest_framework.response import Response
@@ -55,13 +57,8 @@ class AddToCart(APIView, ResponseFormaterMixin):
                 for membership_program in membership_programs:
                     if membership_program.membership_type == 'date_based':
                         if membership_program.start_date > timezone.now() or membership_program.end_date < timezone.now():
-                            return Response(
-                                {
-                                    "error": {"message": "Membership Program Product is not valid"},
-                                    "status_code": 400,
-                                },
-                                status=HTTP_400_BAD_REQUEST,
-                            )
+                            return Response({"message": "Membership Program Product is not valid"},
+                                            status=HTTP_400_BAD_REQUEST)
 
         products = Product.objects.filter(
             id__in=section_products.union(cert_products, membership_program_products)
@@ -82,7 +79,10 @@ class AddToCart(APIView, ResponseFormaterMixin):
 
         cart = create_cart(store, products, product_count, total_amount, request.profile)  # cart must belong to a profile or guest
 
-        coupon, discount_amount, coupon_message = coupon_apply(store, coupon_code, total_amount, request.profile, cart)
+        discount_amount = Decimal('0.0')
+        coupon, coupon_message = validate_coupon(store, coupon_code, request.profile)
+        if coupon:
+            discount_amount = apply_discounts(coupon.discount_program)
 
         sales_tax, tax_message = tax_apply(zip_code, products, cart)
 
@@ -302,7 +302,22 @@ def format_response(store, products, cart, discount_amount, coupon_message, sale
         if course_provider_max_order < question.display_order:
             course_provider_max_order = question.display_order
 
-        if question.question_bank.id not in list({questions["id"]: questions for questions in profile_question_list}):
+        unique_questions = {}
+        for ql in profile_question_list:
+            unique_questions[ql["id"]] = ql
+
+        if question.question_bank.id in list({questions["id"]: questions for questions in profile_question_list}):
+            if question.respondent_type != unique_questions[question.question_bank.id]["respondent_type"]:
+                question_details = {
+                    "id": question.question_bank.id,
+                    "type": question.question_bank.question_type,
+                    "label": question.question_bank.title,
+                    "display_order": question.display_order,
+                    "configuration": question.question_bank.configuration,
+                    "respondent_type": question.respondent_type
+                }
+                profile_question_list.append(question_details)
+        else:
             question_details = {
                 "id": question.question_bank.id,
                 "type": question.question_bank.question_type,
@@ -314,7 +329,22 @@ def format_response(store, products, cart, discount_amount, coupon_message, sale
             profile_question_list.append(question_details)
 
     for question in profile_question_store:
-        if question.question_bank.id not in list({questions["id"]: questions for questions in profile_question_list}):
+        unique_questions = {}
+        for ql in profile_question_list:
+            unique_questions[ql["id"]] = ql
+
+        if question.question_bank.id in list({questions["id"]: questions for questions in profile_question_list}):
+            if question.respondent_type != unique_questions[question.question_bank.id]["respondent_type"]:
+                question_details = {
+                    "id": question.question_bank.id,
+                    "type": question.question_bank.question_type,
+                    "label": question.question_bank.title,
+                    "display_order": question.display_order + course_provider_max_order,
+                    "configuration": question.question_bank.configuration,
+                    "respondent_type": question.respondent_type
+                }
+                profile_question_list.append(question_details)
+        else:
             question_details = {
                 "id": question.question_bank.id,
                 "type": question.question_bank.question_type,
