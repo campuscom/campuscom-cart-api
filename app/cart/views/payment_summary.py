@@ -3,7 +3,7 @@ from rest_framework.response import Response
 
 from shared_models.models import Product, Store, Profile, Cart
 from rest_framework.status import HTTP_200_OK
-
+from django_scopes import scopes_disabled
 from cart.auth import IsAuthenticated
 from cart.mixins import ResponseFormaterMixin
 from decimal import Decimal
@@ -54,7 +54,8 @@ class PaymentSummary(APIView, ResponseFormaterMixin):
 
         if cart_id:
             try:
-                cart = Cart.objects.get(id=cart_id)
+                with scopes_disabled():
+                    cart = Cart.objects.get(id=cart_id)
             except Cart.DoesNotExist:
                 pass
 
