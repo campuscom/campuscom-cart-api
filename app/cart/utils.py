@@ -8,6 +8,7 @@ from decouple import config
 
 from models.course.course import Course as CourseModel
 from models.courseprovider.course_provider import CourseProvider as CourseProviderModel
+from models.checkout.checkout_login_user import CheckoutLoginUser as CheckoutLoginUserModel
 from shared_models.models import Course, StoreCourseSection, CourseSharingContract
 from django_scopes import scopes_disabled
 from urllib.parse import parse_qs
@@ -82,6 +83,7 @@ def format_response(store, products, cart):
                     product_image_uri = config('CDN_URL') + 'uploads' + product.image.url
                 product_data = {
                     'id': str(product.id),
+                    'external_id': str(product.external_id),
                     'title': product.title,
                     'slug': '',
                     'image_uri': product_image_uri,
@@ -140,15 +142,25 @@ def format_response(store, products, cart):
                     else:
                         image_uri = store_course_section.store_course.course.external_image_url
 
+                    course_model = []
+                    try:
+                        course_model = CourseModel.objects.get(id=store_course_section.section.content_db_reference)
+                    except CourseModel.DoesNotExist:
+                        continue
+
                     section_data = []
                     for scc in StoreCourseSection.objects.filter(store_course=store_course_section.store_course,
                                                                  store_course__enrollment_ready=True):
+                        for section_model in course_model.sections:
+                            if section_model.code == scc.section.name:
+                                external_id = section_model.external_id
                         section_data.append({
                             'start_date': scc.section.start_date,
                             'end_date': scc.section.end_date,
                             'execution_site': scc.section.execution_site,
                             'execution_mode': scc.section.execution_mode,
                             'name': scc.section.name,
+                            'external_id': external_id,
                             'product_id': scc.product.id,
                             'price': scc.section.fee,
                             'instructor': "",  # will come from mongodb
@@ -165,6 +177,7 @@ def format_response(store, products, cart):
 
                         details = {
                             'id': str(related_product.related_product.id),
+                            'external_id': str(related_product.related_product.external_id),
                             'title': related_product.related_product.title,
                             'image_uri': related_product_image_uri,
                             'product_type': related_product.related_product.product_type,
@@ -190,8 +203,13 @@ def format_response(store, products, cart):
                     #     }
                     #     membership_program_product_list.append(details)
 
+                    for section_model in course_model.sections:
+                        if section_model.code == store_course_section.section.name:
+                            external_id = section_model.external_id
+
                     product_data = {
                         'id': str(product.id),
+                        'external_id': str(product.external_id),
                         'title': store_course_section.store_course.course.title,
                         'slug': store_course_section.store_course.course.slug,
                         'image_uri': image_uri,
@@ -207,6 +225,7 @@ def format_response(store, products, cart):
                             'execution_site': store_course_section.section.execution_site,
                             'execution_mode': store_course_section.section.execution_mode,
                             'name': store_course_section.section.name,
+                            'external_id': external_id,
                             'product_id': product.id,
                             'price': product.fee,
                             'instructor': "",  # will come from mongodb
@@ -318,59 +337,97 @@ def get_product_ids(store, search_params):
     provider_codes = [item[0] for item in CourseSharingContract.objects.filter(store=store).values_list('course_provider__code')]
 
     product_ids = []
+    external_ids = []
+
     if 'section' in parsed_params:
         external_ids = parsed_params.get('section', [])
-        for item in external_ids:
-            for section in item.split(','):
-                course_external_id, section_external_id = section.split('__')
 
-                course_provider_models = CourseProviderModel.objects.filter(
-                    code__in=provider_codes
+    # tid = when partner logged in user hit partner "checkout-info" with user and products data,
+    # then we store the data in mongoDB and return them a token of encrypted mongo ObjectId
+    # the hit checkout url with the token next time
+    elif 'tid' in parsed_params:
+        token = parsed_params.get('tid', None)
+
+        try:
+            mongo_data = CheckoutLoginUserModel.objects.get(token=token[0])
+        except CheckoutLoginUserModel.DoesNotExist:
+            pass
+        else:
+            try:
+                products = mongo_data['payload']['students'][0]['products']
+
+                for product in products:
+                    if product['product_type'] == 'section':
+                        if external_ids:
+                            external_ids[0] = external_ids[0]+','+product['id']
+                        else:
+                            external_ids.append(product['id'])
+            except KeyError:
+                pass
+
+    for item in external_ids:
+        for section in item.split(','):
+            course_external_id, section_external_id = section.split('__')
+
+            course_provider_models = CourseProviderModel.objects.filter(
+                code__in=provider_codes
+            )
+
+            # as there are multiple course providers, the following query may return multiple courses. what should
+            # happen should it does is not determined yet.
+            try:
+                course_model = CourseModel.objects.get(
+                    provider__in=course_provider_models,
+                    external_id=course_external_id
                 )
+            except CourseModel.DoesNotExist:
+                continue
+            except CourseModel.MultipleObjectsReturned:
+                raise NotImplementedError
 
-                # as there are multiple course providers, the following query may return multiple courses. what should happen should it does is not determined yet.
+            with scopes_disabled():
                 try:
-                    course_model = CourseModel.objects.get(
-                        provider__in=course_provider_models,
-                        external_id=course_external_id
+                    # this query also may return multiple objects
+                    course = Course.objects.get(
+                        content_db_reference=str(course_model.id),
+                        course_provider__code__in=provider_codes
                     )
-                except CourseModel.DoesNotExist:
+                except Course.DoesNotExist:
                     continue
-                except CourseModel.MultipleObjectsReturned:
+                except Course.MultipleObjectsReturned:
                     raise NotImplementedError
 
-                with scopes_disabled():
-                    try:
-                        # this query also may return multiple objects
-                        course = Course.objects.get(
-                            content_db_reference=str(course_model.id),
-                            course_provider__code__in=provider_codes
-                        )
-                    except Course.DoesNotExist:
-                        continue
-                    except Course.MultipleObjectsReturned:
-                        raise NotImplementedError
+                # get the section name. section name and section code are same. but external_id is different.
+                # so make one more loop and more db transaction to get the name. otherwise won't work.
+                section_name = ''
+                for section_model in course_model.sections:
+                    if section_model.external_id == section_external_id:
+                        section_name = section_model.code
+                        break
 
-                    # get the section name. section name and section code are same. but external_id is different.
-                    # so make one more loop and more db transaction to get the name. otherwise won't work.
-                    section_name = ''
-                    for section_model in course_model.sections:
-                        if section_model.external_id == section_external_id:
-                            section_name = section_model.code
-                            break
-
+                try:
+                    store_course_section = StoreCourseSection.objects.get(
+                        # since external_id in SectionModel is the same as code in SectionModel and that in turn is the same as name in Section
+                        section__name=section_name,
+                        store_course__course=course,
+                        store_course__store=store,
+                    )
+                except StoreCourseSection.DoesNotExist:
+                    continue
+                else:
                     try:
+
                         store_course_section = StoreCourseSection.objects.get(
                             # since external_id in SectionModel is the same as code in SectionModel and that in turn is the same as name in Section
                             section__name=section_name,
                             store_course__course=course,
-                            store_course__store=store,
+                            store_course__store=store
                         )
                     except StoreCourseSection.DoesNotExist:
+
+                        product_ids.append(str(store_course_section.product.id))
+                    except AttributeError:
+
                         continue
-                    else:
-                        try:
-                            product_ids.append(str(store_course_section.product.id))
-                        except AttributeError:
-                            continue
+
     return product_ids

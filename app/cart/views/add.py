@@ -37,6 +37,7 @@ class AddToCart(APIView, JWTMixin, ResponseFormaterMixin):
         product_ids = request.data.get('product_ids', None)
         store_slug = request.data.get('store_slug', '')
         search_params = request.data.get('search_params', None)
+
         try:
             store = Store.objects.get(url_slug=store_slug)
         except Store.DoesNotExist:
@@ -48,25 +49,27 @@ class AddToCart(APIView, JWTMixin, ResponseFormaterMixin):
         if not product_ids:
             product_ids = get_product_ids(store, search_params)
 
+        products = Product.objects.filter(id__in=product_ids, active_status=True)
+
         # get the products first
         with scopes_disabled():
             section_products = StoreCourseSection.objects.filter(
                 store_course__enrollment_ready=True,
-                product__in=product_ids
+                product__in=products
             ).values('product')
 
             cert_products = StoreCertificate.objects.filter(
                 enrollment_ready=True,
-                product__in=product_ids
+                product__in=products
             ).values('product')
 
             membership_program_products = MembershipProgram.objects.filter(
-                product__id__in=product_ids,
+                product__id__in=products,
                 store=store
             ).values('product')
 
             if membership_program_products:
-                membership_programs = MembershipProgram.objects.filter(product__id__in=product_ids, store=store)
+                membership_programs = MembershipProgram.objects.filter(product__id__in=products, store=store)
                 for membership_program in membership_programs:
                     if membership_program.membership_type == 'date_based':
                         if membership_program.start_date > timezone.now() or membership_program.end_date < timezone.now():
@@ -84,11 +87,12 @@ class AddToCart(APIView, JWTMixin, ResponseFormaterMixin):
         total_amount = fee_aggregate['total_amount']
 
         product_count = {}
-        for product_id in product_ids:
+        for product in products:
+            product_id = str(product.id)
             if product_id in product_count:
                 product_count[product_id] = product_count[product_id] + 1
             else:
-                product_count[str(product_id)] = 1
+                product_count[product_id] = 1
 
         cart = create_cart(store, products, product_count, total_amount, request.profile)
 

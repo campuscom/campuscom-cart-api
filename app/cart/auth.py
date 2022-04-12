@@ -1,4 +1,4 @@
-from shared_models.models.registration import Profile
+from shared_models.models import Profile, StudentProfile, Store
 from rest_framework.permissions import IsAuthenticated, SAFE_METHODS
 from decouple import config
 import jwt
@@ -11,6 +11,7 @@ class IsAuthenticated(IsAuthenticated):
     def has_permission(self, request, view):
         search_params = request.data.get('search_params', None)
         checkout = request.query_params.get('checkout', 'nada')
+        store_slug = request.data.get('store_slug', '')
 
         request.profile = None
         if checkout == 'guest':
@@ -34,6 +35,7 @@ class IsAuthenticated(IsAuthenticated):
             return True
 
         parsed_params = parse_qs(search_params)
+
         if 'pid' in parsed_params:
             try:
                 profile_id = parsed_params.get('pid', [])[0]
@@ -45,6 +47,33 @@ class IsAuthenticated(IsAuthenticated):
             except Profile.DoesNotExist:
                 raise AuthenticationFailed()
             return True
+
+        if 'primary_email' in parsed_params:
+            try:
+                store = Store.objects.get(url_slug=store_slug)
+            except Store.DoesNotExist:
+                return False
+
+            profile, created = Profile.objects.update_or_create(
+                primary_email=parsed_params.get('primary_email', [])[0],
+                first_name=parsed_params.get('first_name', [])[0],
+                last_name=parsed_params.get('last_name', [])[0]
+            )
+            student_profile, created = StudentProfile.objects.update_or_create(
+                profile=profile,
+                store=store,
+                external_profile_id=parsed_params.get('student_id', [])[0]
+            )
+            return True
+
+        # tid = when partner logged in user hit partner "checkout-info" with user and products data,
+        # then we store the data in mongoDB and return them a token of encrypted mongo ObjectId
+        # the hit checkout url with the token next time
+        if 'tid' in parsed_params:
+            request.profile = None
+
+            return True
+
         raise AuthenticationFailed()
 
     def has_object_permission(self, request, view, obj):
