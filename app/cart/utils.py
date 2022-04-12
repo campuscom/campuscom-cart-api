@@ -22,7 +22,8 @@ def format_response(store, products, cart):
         payment_gateways.append({
             'id': str(item.id),
             'name': item.payment_gateway.name,
-            'branding': item.branding
+            'branding': item.branding,
+            'config': item.payment_gateway_config.configuration
         })
 
     all_items = []
