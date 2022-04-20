@@ -356,15 +356,15 @@ def get_product_ids(store, search_params):
         else:
             try:
                 products = mongo_data['payload']['students'][0]['products']
-
+            except KeyError:
+                pass
+            else:
                 for product in products:
                     if product['product_type'] == 'section':
                         if external_ids:
                             external_ids[0] = external_ids[0]+','+product['id']
                         else:
                             external_ids.append(product['id'])
-            except KeyError:
-                pass
 
     for item in external_ids:
         for section in item.split(','):
@@ -417,18 +417,8 @@ def get_product_ids(store, search_params):
                     continue
                 else:
                     try:
-
-                        store_course_section = StoreCourseSection.objects.get(
-                            # since external_id in SectionModel is the same as code in SectionModel and that in turn is the same as name in Section
-                            section__name=section_name,
-                            store_course__course=course,
-                            store_course__store=store
-                        )
-                    except StoreCourseSection.DoesNotExist:
-
                         product_ids.append(str(store_course_section.product.id))
                     except AttributeError:
-
                         continue
 
     return product_ids
