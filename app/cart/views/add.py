@@ -47,7 +47,10 @@ class AddToCart(APIView, JWTMixin, ResponseFormaterMixin):
         # code = request.data.get('code', None)
 
         if not product_ids:
-            product_ids = get_product_ids(store, search_params)
+            product_ids, tid_isvalid = get_product_ids(store, search_params)
+
+        if not tid_isvalid:
+            return Response({'message': 'token is expired'}, status=HTTP_200_OK)
 
         products = Product.objects.filter(id__in=product_ids, active_status=True)
 

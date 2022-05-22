@@ -12,7 +12,7 @@ from models.checkout.checkout_login_user import CheckoutLoginUser as CheckoutLog
 from shared_models.models import Course, StoreCourseSection, CourseSharingContract
 from django_scopes import scopes_disabled
 from urllib.parse import parse_qs
-
+import datetime
 
 def format_response(store, products, cart):
     store_serializer = StoreSerializer(store)
@@ -334,7 +334,7 @@ def format_response(store, products, cart):
 
 def get_product_ids(store, search_params):
     parsed_params = parse_qs(search_params)
-
+    tid_isvalid = True
     provider_codes = [item[0] for item in CourseSharingContract.objects.filter(store=store).values_list('course_provider__code')]
 
     product_ids = []
@@ -350,21 +350,29 @@ def get_product_ids(store, search_params):
         token = parsed_params.get('tid', None)
 
         try:
-            mongo_data = CheckoutLoginUserModel.objects.get(token=token[0])
+            login_user_data = CheckoutLoginUserModel.objects.get(token=token[0])
         except CheckoutLoginUserModel.DoesNotExist:
             pass
         else:
-            try:
-                products = mongo_data['payload']['students'][0]['products']
-            except KeyError:
-                pass
+            expiration_time = login_user_data['expiration_time']
+            created_time = login_user_data['created_at'].replace(tzinfo=None)
+            valid_time = created_time + datetime.timedelta(seconds=expiration_time)
+            now = datetime.datetime.now().replace(tzinfo=None)
+
+            if valid_time > now:
+                try:
+                    products = login_user_data['payload']['students'][0]['products']
+                except KeyError:
+                    pass
+                else:
+                    for product in products:
+                        if product['product_type'] == 'section':
+                            if external_ids:
+                                external_ids[0] = external_ids[0]+','+product['id']
+                            else:
+                                external_ids.append(product['id'])
             else:
-                for product in products:
-                    if product['product_type'] == 'section':
-                        if external_ids:
-                            external_ids[0] = external_ids[0]+','+product['id']
-                        else:
-                            external_ids.append(product['id'])
+                tid_isvalid = False
 
     for item in external_ids:
         for section in item.split(','):
@@ -421,4 +429,4 @@ def get_product_ids(store, search_params):
                     except AttributeError:
                         continue
 
-    return product_ids
+    return product_ids, tid_isvalid
