@@ -46,6 +46,7 @@ class AddToCart(APIView, JWTMixin, ResponseFormaterMixin):
         # course_external_id = request.data.get('course_external_id', None)
         # code = request.data.get('code', None)
 
+        tid_isvalid = True
         if not product_ids:
             product_ids, tid_isvalid = get_product_ids(store, search_params)
 
