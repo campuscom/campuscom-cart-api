@@ -12,7 +12,7 @@ from models.checkout.checkout_login_user import CheckoutLoginUser as CheckoutLog
 from shared_models.models import Course, StoreCourseSection, CourseSharingContract
 from django_scopes import scopes_disabled
 from urllib.parse import parse_qs
-
+import datetime
 
 def format_response(store, products, cart):
     store_serializer = StoreSerializer(store)
@@ -152,6 +152,7 @@ def format_response(store, products, cart):
                     section_data = []
                     for scc in StoreCourseSection.objects.filter(store_course=store_course_section.store_course,
                                                                  store_course__enrollment_ready=True):
+                        external_id = ''
                         for section_model in course_model.sections:
                             if section_model.code == scc.section.name:
                                 external_id = section_model.external_id
@@ -334,7 +335,6 @@ def format_response(store, products, cart):
 
 def get_product_ids(store, search_params):
     parsed_params = parse_qs(search_params)
-
     provider_codes = [item[0] for item in CourseSharingContract.objects.filter(store=store).values_list('course_provider__code')]
 
     product_ids = []
@@ -350,21 +350,29 @@ def get_product_ids(store, search_params):
         token = parsed_params.get('tid', None)
 
         try:
-            mongo_data = CheckoutLoginUserModel.objects.get(token=token[0])
+            login_user_data = CheckoutLoginUserModel.objects.get(token=token[0])
         except CheckoutLoginUserModel.DoesNotExist:
             pass
         else:
-            try:
-                products = mongo_data['payload']['students'][0]['products']
+            expiration_time = login_user_data['expiration_time']
+            created_time = login_user_data['created_at'].replace(tzinfo=None)
+            valid_time = created_time + datetime.timedelta(seconds=expiration_time)
+            now = datetime.datetime.now().replace(tzinfo=None)
 
-                for product in products:
-                    if product['product_type'] == 'section':
-                        if external_ids:
-                            external_ids[0] = external_ids[0]+','+product['id']
-                        else:
-                            external_ids.append(product['id'])
-            except KeyError:
-                pass
+            if valid_time > now:
+                try:
+                    products = login_user_data['payload']['students'][0]['products']
+                except KeyError:
+                    pass
+                else:
+                    for product in products:
+                        if product['product_type'] == 'section':
+                            if external_ids:
+                                external_ids[0] = external_ids[0]+','+product['id']
+                            else:
+                                external_ids.append(product['id'])
+            else:
+                return product_ids, False
 
     for item in external_ids:
         for section in item.split(','):
@@ -417,18 +425,8 @@ def get_product_ids(store, search_params):
                     continue
                 else:
                     try:
-
-                        store_course_section = StoreCourseSection.objects.get(
-                            # since external_id in SectionModel is the same as code in SectionModel and that in turn is the same as name in Section
-                            section__name=section_name,
-                            store_course__course=course,
-                            store_course__store=store
-                        )
-                    except StoreCourseSection.DoesNotExist:
-
                         product_ids.append(str(store_course_section.product.id))
                     except AttributeError:
-
                         continue
 
-    return product_ids
+    return product_ids, True
